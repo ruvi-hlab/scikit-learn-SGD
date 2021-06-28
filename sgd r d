@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Jun 23 13:28:06 2021
+
+@author: user0220
+"""
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import f1_score
+from matplotlib import pyplot as plt
+
+import pandas as pd
+import numpy as np
+print('전체 데이터셋 로드\n')
+df = pd.read_excel('/home/user0220/Downloads/발달코드/시즌2 데이터/최종/분류기/data/전체_데이터_20200223.xlsx' ,sheet_name='Sheet1')
+
+## df  : 원본 엑셀 데이터
+## df2 : 정답, ID, 결측행이 제거된 데이터
+RND_SEED = 42
+CPU_CORES = -1
+K_FOLD = 10
+SPLIT_SIZE = 0.2
+SGD_LOOP = 10000
+# ########################
+# ## 기존 생성 데이터를 업샘플링 되는지 테스트
+# ########################
+
+# N_SAMPLES = 350
+# N_FEATURES = 210  ##독립변수=피처
+# N_CLUSTERS_OF_A_CLASS = 1
+# N_CLASSES = 3  ##종속변수=클래스
+# CLUSTERS_SPLIT = [0.35, 0.35, 0.3]
+# RANDOM_NOISE = 0 # 0.5%의 오차 노이즈
+# N_INF = 15  ##독립 변수 중 종속 변수와 상관 관계가 있는 성분의 수, 디폴트 2
+# N_RED = 15  ##독립 변수 중 다른 독립 변수의 선형 조합으로 나타나는 성분의 수, 디폴트 2
+# N_REP = 10  ##독립 변수 중 단순 중복된 성분의 수, 디폴트 0
+# from sklearn.datasets import make_classification
+# X, y = make_classification(n_samples=N_SAMPLES, n_features=N_FEATURES, 
+#        n_informative=N_INF, n_redundant=N_RED, n_repeated=N_REP, n_classes=N_CLASSES, 
+#        n_clusters_per_class=N_CLUSTERS_OF_A_CLASS, weights=CLUSTERS_SPLIT, 
+#        flip_y=RANDOM_NOISE, random_state=RND_SEED)
+
+
+##########
+## 데이터프레임 조작 테스트
+##########
+df.isnull().sum(1)  ## 행의 결측값 개수 세기
+list(df.isnull().sum(1))
+list(df.isnull().sum(1)).count(True)  ## 결측값이 있는 행만 세기
+print('결측값이 있는 행의 개수:',list(df.isnull().sum(1)).count(True),'\n')
+
+print('결측 행 제거\n')
+df2 = df.dropna(axis=1)
+
+print('정답 레이블(y) 분리\n전문의 판정feature를 정답으로 사용함\n')
+y = df2['전문의판정']
+
+print('정답 제거된 데이터프레임 생성\n')
+df2.drop(['전문의판정','ADHD=2\nADHD 위기=1\n정상=0'], axis=1, inplace=True)
+
+print('이름, ID 제거\n')
+df2.drop(['ID','이름'], axis=1, inplace=True)
+
+print('기존 코드에서 이 부분 드롭했길래 추가함\n')
+df2.drop(['나이', '만나이', '성별'], axis=1, inplace=True)
+ 
+
+print('음성:{}\n위기:{}\n양성:{}\n'.format(list(y).count(0),list(y).count(1),list(y).count(2)))
+pd.value_counts(y).plot.bar()
+plt.xlabel('Class') 
+plt.show()
+
+print('세트 분할')
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(df2, y, test_size=SPLIT_SIZE, 
+                         shuffle=True, stratify=y, random_state=RND_SEED)
+print('Train data: {}, Test data: {}\n'.format(X_train.shape[0], X_test.shape[0]))
+
+
+## 샘플링 이후 진행하는거로로
+print('데이터 스케일링\n')
+from sklearn.preprocessing import StandardScaler
+sc = StandardScaler()
+sc.fit(X_train)
+X_train_std = sc.fit_transform(X_train)
+X_test_std = sc.transform(X_test)
+
+
+print('불균형 데이터 샘플링(SMOTE)')
+from imblearn.over_sampling import SMOTE
+X_train_std_smote, y_train_smote = SMOTE(random_state=RND_SEED).fit_sample(X_train_std, y_train)
+print('음성:{}\n위기:{}\n양성:{}'.format(list(y_train_smote).count(0),list(y_train_smote).count(1),list(y_train_smote).count(2)))
+pd.value_counts(y_train_smote).plot.bar()
+plt.title('SMOTE')
+plt.xlabel('Class') 
+plt.show()
+
+print('\n불균형 데이터 샘플링(ADASYN)')
+from imblearn.over_sampling import ADASYN
+X_train_std_adasyn, y_train_adasyn = ADASYN(random_state=RND_SEED).fit_resample(X_train_std, y_train)
+print('음성:{}\n위기:{}\n양성:{}'.format(list(y_train_adasyn).count(0),list(y_train_adasyn).count(1),list(y_train_adasyn).count(2)))
+pd.value_counts(y_train_adasyn).plot.bar()
+plt.title('ADASYN')
+plt.xlabel('Class') 
+plt.show()
+
+
+from sklearn.linear_model import SGDClassifier
+SGD_PENALTY = "l2" ## l1
+sgd = SGDClassifier(penalty=SGD_PENALTY, max_iter=SGD_LOOP)
+
+from sklearn.model_selection import GridSearchCV
+param_grid = {'loss':['hinge','log'],
+              'alpha':[0.0001, 0.001, 0.01]}
+gs = GridSearchCV(estimator=sgd, param_grid=param_grid, scoring='f1_micro',
+                  cv=K_FOLD, n_jobs=CPU_CORES)
+gs.fit(X_train_std_smote,y_train_smote)
+# print(gs.best_score_)
+print('Grid search:',gs.best_params_,'\n')
+
+GSsgd = SGDClassifier(penalty=SGD_PENALTY, loss=gs.best_params_['loss'], 
+                      alpha=gs.best_params_['alpha'] , max_iter=SGD_LOOP)
+GSsgd1 = GSsgd
+GSsgd1.fit(X_train_std_smote, y_train_smote)
+print('SMOTE GSsgd. Train: %.4f  Test: %.4f'%(
+    f1_score(y_train_smote, GSsgd1.predict(X_train_std_smote),average='micro'), 
+    f1_score(y_test, GSsgd1.predict(X_test_std), average='micro')))
+CM_GSsgd1 = confusion_matrix(y_test, GSsgd1.predict(X_test_std))
+
+GSsgd2 = GSsgd
+GSsgd2.fit(X_train_std_adasyn, y_train_adasyn)
+print('ADASYN GSsgd. Train: %.4f  Test: %.4f'%(
+    f1_score(y_train_adasyn, GSsgd2.predict(X_train_std_adasyn),average='micro'), 
+    f1_score(y_test, GSsgd2.predict(X_test_std), average='micro')))
+CM_GSsgd1 = confusion_matrix(y_test, GSsgd2.predict(X_test_std))
+
+sgd1 = sgd
+sgd1.fit(X_train_std,y_train)
+print('no sampling sgd. Train: %.4f  Test: %.4f\n'%(
+    f1_score(y_train, sgd1.predict(X_train_std),average='micro'), 
+    f1_score(y_test, sgd1.predict(X_test_std), average='micro')))
+CM_sgd1 = confusion_matrix(y_test, sgd1.predict(X_test_std))
+
+from sklearn.linear_model import LogisticRegression
+LRclf = LogisticRegression(random_state=RND_SEED).fit(X_train_std, y_train)
+print('logi Reg. Train: %.4f  Test: %.4f'%(
+    f1_score(y_train, LRclf.predict(X_train_std),average='micro'), 
+    f1_score(y_test, LRclf.predict(X_test_std), average='micro')))
+
+LRclf1 = LogisticRegression(random_state=RND_SEED).fit(X_train_std_smote, y_train_smote)
+print('SMOTE logi Reg. Train: %.4f  Test: %.4f'%(
+    f1_score(y_train_smote, LRclf1.predict(X_train_std_smote),average='micro'), 
+    f1_score(y_test, LRclf1.predict(X_test_std), average='micro')))
+
+LRclf2 = LogisticRegression(random_state=RND_SEED).fit(X_train_std_adasyn, y_train_adasyn)
+print('ADASYN logi Reg. Train: %.4f  Test: %.4f\n'%(
+    f1_score(y_train_adasyn, LRclf2.predict(X_train_std_adasyn),average='micro'), 
+    f1_score(y_test, LRclf2.predict(X_test_std), average='micro')))
+
+# SMOTE 먼저
+# GSsgd. Train: 0.9695  Test: 0.6923
+# 스케일링 먼저
+# GSsgd. Train: 0.9756  Test: 0.6308
+
+
+##########################
+df3 = pd.concat([df2,y],axis=1)
+a0=df2.loc[list(df3[df3.전문의판정==0].index)]
+a1=df2.loc[list(df3[df3.전문의판정==1].index)]
+a2=df2.loc[list(df3[df3.전문의판정==2].index)]
+GENER_DATA = 500
+import resampling
+# aa=resampling.dataResampling(df2, y)
+r0=resampling.syntheticData_normDis(a0,mode=4,synthetic_create_num=GENER_DATA,random_state=RND_SEED)
+r1=resampling.syntheticData_normDis(a1,mode=4,synthetic_create_num=GENER_DATA,random_state=RND_SEED)
+r2=resampling.syntheticData_normDis(a2,mode=4,synthetic_create_num=GENER_DATA,random_state=RND_SEED)
+
+y0=np.full((1,r0.shape[0]),0).T
+y1=np.full((1,r1.shape[0]),1).T
+y2=np.full((1,r2.shape[0]),2).T
+
+df5 = pd.concat([r0,r1,r2])
+yy = np.concatenate((y0, y1, y2), axis=None)
+print('세트 분할')
+X_tr, X_te, y_tr, y_te = train_test_split(df5, yy, test_size=SPLIT_SIZE, 
+                         shuffle=True, stratify=yy, random_state=RND_SEED)
+print('생성된데이터. Tr data: {}, Te data: {}\n'.format(X_tr.shape[0], X_te.shape[0]))
+
+print('데이터 스케일링\n')
+sc1 = StandardScaler()
+sc1.fit(X_tr)
+X_tr_std = sc1.fit_transform(X_tr)
+X_te_std = sc1.transform(X_te)
+
+GSsgd3 = GSsgd
+GSsgd3.fit(X_tr_std, y_tr)
+print('생성data GSsgd. Train: %.4f  Test: %.4f'%(
+    f1_score(y_tr, GSsgd3.predict(X_tr_std),average='micro'), 
+    f1_score(y_te, GSsgd3.predict(X_te_std), average='micro')))
+CM_GSsgd3 = confusion_matrix(y_te, GSsgd3.predict(X_te_std))
+
+LRclf3 = LogisticRegression(random_state=RND_SEED).fit(X_tr_std, y_tr)
+print('생성data logi Reg. Train: %.4f  Test: %.4f'%(
+    f1_score(y_tr, LRclf3.predict(X_tr_std),average='micro'), 
+    f1_score(y_te, LRclf3.predict(X_te_std), average='micro')))
+
+
+################
+b0 = X_train.loc[y_train[y_train==0].index]
+b1 = X_train.loc[y_train[y_train==1].index]
+b2 = X_train.loc[y_train[y_train==2].index]
+rr0=resampling.syntheticData_normDis(b0,mode=4,synthetic_create_num=GENER_DATA,random_state=RND_SEED)
+rr1=resampling.syntheticData_normDis(b1,mode=4,synthetic_create_num=GENER_DATA,random_state=RND_SEED)
+rr2=resampling.syntheticData_normDis(b2,mode=4,synthetic_create_num=GENER_DATA,random_state=RND_SEED)
+X_train_up = pd.concat([rr0,rr1,rr2])
+
+yy0=np.full((1,rr0.shape[0]),0).T
+yy1=np.full((1,rr1.shape[0]),1).T
+yy2=np.full((1,rr2.shape[0]),2).T
+y_train_up = np.concatenate((yy0, yy1, yy2), axis=None)
+
+# tmp = [[x,y] for x, y in zip(X_train_up, y_train_up)]
+# import random
+# random.shuffle(tmp)
+# X_train_up = [n[0] for n in tmp]
+# y_train_up = [n[1] for n in tmp]
+print('데이터 셔플\n')
+from sklearn.utils import shuffle
+X_train_up, y_train_up = shuffle(X_train_up, y_train_up, random_state=RND_SEED)
+
+print('데이터 스케일링\n')
+sc2 = StandardScaler()
+sc2.fit(X_train_up)
+X_tr_std = sc2.fit_transform(X_train_up)
+X_te_std = sc2.transform(X_test)
+
+GSsgd4 = GSsgd
+GSsgd4.fit(X_tr_std, y_train_up)
+print('생성data2 GSsgd. Train: %.4f  Test: %.4f'%(
+    f1_score(y_train_up, GSsgd4.predict(X_tr_std),average='micro'), 
+    f1_score(y_test, GSsgd4.predict(X_te_std), average='micro')))
+CM_GSsgd4 = confusion_matrix(y_test, GSsgd4.predict(X_te_std))
+
+LRclf4 = LogisticRegression(random_state=RND_SEED).fit(X_tr_std, y_train_up)
+print('생성data2 logi Reg. Train: %.4f  Test: %.4f'%(
+    f1_score(y_train_up, LRclf4.predict(X_tr_std),average='micro'), 
+    f1_score(y_test, LRclf4.predict(X_te_std), average='micro')))
+###########
+## ANOUNCE
+###########
+print('\n\n기존 분류기 특징:\n  데이터 특성에 따른 2가지 옵션을 가짐\n  로봇데이터, 전문가데이터로 나뉘어 있음\n  본 과정에서는 이 2가지 데이터 타입을\n  통째로 분류모델에 적용해 본다')
